@@ -28,7 +28,7 @@ collection = chroma_client.get_or_create_collection(name="ai_knowledge_base")
 # ----------------------------------------------------------------------
 memory = ConversationBufferMemory(return_messages=True)  # single memory for the entire conversation
 semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
-chat = ChatGroq(temperature=0.7, model_name="llama3-70b-8192", groq_api_key="ApiKey")
+chat = ChatGroq(temperature=0.7, model_name="llama3-70b-8192", groq_api_key="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")
 
 # ----------------------------------------------------------------------
 # ✅ Streamlit Page Configuration
