@@ -1,8 +1,13 @@
 # chat_app.py
 
 import sys
-# Redirect 'sqlite3' to 'pysqlite3'
-sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+
+# Try to use pysqlite3 for sqlite3, otherwise fall back to the built-in sqlite3.
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    import sqlite3
 
 import chromadb
 import streamlit as st
@@ -41,20 +46,19 @@ st.write("Ask me anything!")
 # ✅ Retrieve Context from ChromaDB
 # ----------------------------------------------------------------------
 def retrieve_context(query, top_k=1):
-    """Use the embedding model + ChromaDB to fetch relevant context for the user query."""
+    """Fetch relevant context for the user query using embeddings and ChromaDB."""
     query_embedding = embedding_model.embed_query(query)
     results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
-    # Return the top document or a fallback message if none found
+    # Return the top document or a fallback message if none is found
     return results.get("documents", [[]])[0] if results else ["No relevant context found."]
 
 # ----------------------------------------------------------------------
 # ✅ Evaluate Response Similarity
 # ----------------------------------------------------------------------
 def evaluate_response(user_query, bot_response, context):
-    """Compute similarity score between the bot's response and the retrieved context."""
+    """Compute similarity between the bot's response and the retrieved context."""
     response_embedding = semantic_model.encode(bot_response, convert_to_tensor=True)
     context_embedding = semantic_model.encode(context, convert_to_tensor=True)
-    # Higher score indicates closer semantic similarity
     return util.pytorch_cos_sim(response_embedding, context_embedding)[0][0].item()
 
 # ----------------------------------------------------------------------
@@ -62,10 +66,10 @@ def evaluate_response(user_query, bot_response, context):
 # ----------------------------------------------------------------------
 def query_llama3(user_query):
     """
-    1. Gathers all previous messages from memory + the system prompt.
-    2. Retrieves additional context from ChromaDB.
-    3. Passes everything to the LLM (ChatGroq).
-    4. Returns the AI's response text.
+    1. Gather system prompt, memory, and new user query.
+    2. Retrieve additional context from ChromaDB.
+    3. Pass all messages to the LLM.
+    4. Return the AI's response.
     """
     
     # System Prompt
@@ -110,24 +114,22 @@ I want a chatbot that references a PDF about Nandesh Kalashetti’s background, 
 1. **Short Query:** “What are Nandesh’s top skills?”  
    - **Short Answer** (≤6 words, with emojis)  
 2. **Complex Query:** “Tell me more about his advanced projects and how they integrate with cloud platforms.”  
-   - **Detailed Explanation** referencing PDF data (projects, certifications, advanced solutions), with structured insights and an empathetic tone.
+   - **Detailed Explanation** referencing PDF data, with structured insights and an empathetic tone.
 """
 
-    # Retrieve relevant context from the knowledge base
+    # Retrieve relevant context from the knowledge base (optional integration)
     retrieved_context = retrieve_context(user_query)
     
     # Prepare the message list:
-    # 1. System Prompt
-    # 2. All messages so far (User + Assistant) from memory
+    # 1. System prompt
+    # 2. All previous messages from memory
     # 3. Current user query
     messages = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages + [HumanMessage(content=user_query)]
     
-    # Invoke the LLM
     try:
+        # Get the response from the chat model
         response = chat.invoke(messages)
-        # Return the LLM response text
         return response.content
-    
     except Exception as e:
         return f"⚠️ Error: {str(e)}"
 
@@ -135,7 +137,7 @@ I want a chatbot that references a PDF about Nandesh Kalashetti’s background, 
 # ✅ Display Existing Conversation & Accept New User Input
 # ----------------------------------------------------------------------
 
-# Display the existing conversation from memory
+# Display the conversation stored in memory
 for msg in memory.chat_memory.messages:
     if msg.type == "human":
         st.chat_message("user").write(msg.content)
@@ -145,20 +147,19 @@ for msg in memory.chat_memory.messages:
 # Input box for user queries
 user_input = st.chat_input("Type your message...")
 
-# Handle user input
 if user_input:
-    # 1) Add user message to memory
+    # 1) Add the user message to memory
     memory.chat_memory.add_user_message(user_input)
-
-    # 2) Query the model
+    
+    # 2) Query the model and get the AI response
     ai_response = query_llama3(user_input)
-
-    # 3) Add AI response to memory
+    
+    # 3) Add the AI response to memory
     memory.chat_memory.add_ai_message(ai_response)
-
-    # 4) Display the AI's response
+    
+    # 4) Display the AI's response in the Streamlit interface
     st.chat_message("assistant").write(ai_response)
-
-    # (Optional) Evaluate how relevant the response is to retrieved context
+    
+    # (Optional) Evaluate response similarity to the retrieved context
     # context_score = evaluate_response(user_input, ai_response, retrieve_context(user_input))
     # st.write(f"Context Relevance Score: {context_score:.2f}")
