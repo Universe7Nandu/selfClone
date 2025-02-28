@@ -39,7 +39,7 @@ chat = ChatGroq(temperature=0.7, model_name="llama3-70b-8192", groq_api_key="gsk
 # ✅ Streamlit Page Configuration
 # ----------------------------------------------------------------------
 st.set_page_config(page_title="Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 AI Chatbot Of Vinayak")
+st.title("🤖Know About Nandesh!!")
 st.write("Ask me anything!")
 
 # ----------------------------------------------------------------------
