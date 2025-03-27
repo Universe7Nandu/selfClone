@@ -1,222 +1,526 @@
-# chat_app.py
 import os
-import PyPDF2
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-import chromadb
-import sys
-
-# Try to use pysqlite3 for sqlite3, otherwise fall back to the built-in sqlite3.
-try:
-    import pysqlite3
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    import sqlite3
-
-
+import base64
+import tempfile
 import streamlit as st
-import numpy as np
-from PyPDF2 import PdfReader
+from deep_translator import GoogleTranslator
+from dotenv import load_dotenv
+import groq
+from gtts import gTTS
+from PIL import Image
+import requests
+from langdetect import detect, LangDetectException
+import time
 
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.memory import ConversationBufferMemory
+# Load environment variables from .env file
+load_dotenv()
 
-from sentence_transformers import SentenceTransformer, util
+# Get API key
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-chroma_client = chromadb.PersistentClient(path="./chroma_db_5")
-try:
-    collection = chroma_client.get_collection(name="ai_knowledge_base")
-except chromadb.errors.InvalidCollectionException:
-    collection = chroma_client.create_collection(name="ai_knowledge_base")
+# Page configuration
+st.set_page_config(
+    page_title="Indic Language Translator Pro",
+    page_icon="🌐",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# 2. Initialize Embedding Model
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# Enhanced CSS with more modern effects
+st.markdown("""
+<style>
+    /* Modern theme colors */
+    :root {
+        --bg-color: #0a0f1c;
+        --card-bg: #1a1f2e;
+        --accent: #4f46e5;
+        --accent-hover: #4338ca;
+        --text: #f8fafc;
+        --text-secondary: #94a3b8;
+        --border: #2d3748;
+        --gradient-1: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+        --gradient-2: linear-gradient(135deg, #1a1f2e 0%, #2d3748 100%);
+        --gradient-3: linear-gradient(45deg, #3b82f6, #8b5cf6, #d946ef);
+        --gradient-4: linear-gradient(-45deg, #4f46e5, #7c3aed, #2563eb);
+    }
 
-# 3. Function to Extract Text from PDF
-def extract_text_from_pdf(pdf_path):
-    """Extract text from a PDF file using PyPDF2."""
-    text = ""
-    with open(pdf_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    return text
+    /* Enhanced header section */
+    .header-section {
+        background: var(--gradient-3);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        position: relative;
+        overflow: hidden;
+    }
 
-# 4. Function to Chunk and Upsert into ChromaDB
-def chunk_and_upsert(document_text, chunk_size=200, chunk_overlap=50, batch_size=10):
-    """
-    Split a document into chunks and upsert them into ChromaDB.
-    """
-    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    chunks = splitter.split_text(document_text)
+    .header-section::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--gradient-4);
+        opacity: 0.3;
+        animation: gradient 8s ease infinite;
+    }
 
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i : i + batch_size]
-        embeddings = [embedding_model.embed_query(chunk) for chunk in batch]
-        collection.add(
-            documents=batch,
-            embeddings=embeddings,
-            ids=[f"doc_chunk_{i+j}" for j in range(len(batch))],
-            metadatas=[{"chunk_index": i+j} for j in range(len(batch))]
-        )
-    return f"Upserted {len(chunks)} chunks to the database."
+    @keyframes gradient {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
 
-# 5. Main Function to Ingest PDF
-if __name__ == "__main__":
-    pdf_path = "./resume.pdf"  # <-- Make sure the PDF is in the same folder or provide the full path
-    if not os.path.exists(pdf_path):
-        print(f"⚠️ PDF file not found at: {pdf_path}")
-    else:
-        text = extract_text_from_pdf(pdf_path)
-        if text.strip():
-            result = chunk_and_upsert(text, chunk_size=200, chunk_overlap=50)
-            print(result)
-        else:
-            print("⚠️ No text found in the PDF!")
+    .header-content {
+        position: relative;
+        z-index: 1;
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Initialize Embeddings & ChromaDB
-# ----------------------------------------------------------------------
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-chroma_client = chromadb.PersistentClient(path="./chroma_db_4")
-collection = chroma_client.get_or_create_collection(name="ai_knowledge_base")
+    .header-title {
+        font-size: 3rem;
+        font-weight: 800;
+        background: linear-gradient(to right, #fff, #e2e8f0);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 1rem;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        transform-style: preserve-3d;
+        transition: transform 0.3s ease;
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Initialize Memory & Chat Model
-# ----------------------------------------------------------------------
-memory = ConversationBufferMemory(return_messages=True)  # single memory for the entire conversation
-semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
-chat = ChatGroq(temperature=0.7, model_name="llama3-70b-8192", groq_api_key="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")
+    .header-title:hover {
+        transform: translateZ(20px) rotateX(5deg);
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Streamlit Page Configuration
-# ----------------------------------------------------------------------
-st.set_page_config(page_title="Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖Know About Nandesh!!")
-st.write("Ask me anything!")
+    .header-subtitle {
+        font-size: 1.2rem;
+        color: rgba(255,255,255,0.9);
+        max-width: 600px;
+        line-height: 1.6;
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Retrieve Context from ChromaDB
-# ----------------------------------------------------------------------
-def retrieve_context(query, top_k=1):
-    """Fetch relevant context for the user query using embeddings and ChromaDB."""
-    query_embedding = embedding_model.embed_query(query)
-    results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
-    # Return the top document or a fallback message if none is found
-    return results.get("documents", [[]])[0] if results else ["No relevant context found."]
+    /* Enhanced translator panels */
+    .translator-panel {
+        background: rgba(26, 31, 46, 0.8);
+        backdrop-filter: blur(12px);
+        border-radius: 20px;
+        padding: 28px;
+        margin: 20px 0;
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        transform-style: preserve-3d;
+        transition: all 0.4s ease;
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Evaluate Response Similarity
-# ----------------------------------------------------------------------
-def evaluate_response(user_query, bot_response, context):
-    """Compute similarity between the bot's response and the retrieved context."""
-    response_embedding = semantic_model.encode(bot_response, convert_to_tensor=True)
-    context_embedding = semantic_model.encode(context, convert_to_tensor=True)
-    return util.pytorch_cos_sim(response_embedding, context_embedding)[0][0].item()
+    .translator-panel:hover {
+        transform: translateY(-8px) translateZ(20px);
+        box-shadow: 0 15px 45px rgba(0,0,0,0.3);
+    }
 
-# ----------------------------------------------------------------------
-# ✅ Query AI Model
-# ----------------------------------------------------------------------
-def query_llama3(user_query):
-    """
-    1. Gather system prompt, memory, and new user query.
-    2. Retrieve additional context from ChromaDB.
-    3. Pass all messages to the LLM.
-    4. Return the AI's response.
-    """
-    
-    # System Prompt
-    system_prompt = """
-## **Goal**  
-I want a chatbot that references a PDF about Nandesh Kalashetti’s background, skills, projects, and certifications. It should provide **short answers** (with emojis) for simple questions, and **detailed explanations** (referencing PDF insights) for more complex questions. The chatbot must maintain a warm, human tone and never reveal any non-human origins.
+    /* Language selector enhancement */
+    .language-selector {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+    }
 
-## **Return Format**  
-1. **Concise Responses (Simple Queries):**  
-   - Under six words.  
-   - Use relevant emojis (e.g., 😊, 🚀, 👍) to convey friendliness and clarity.  
+    .language-btn {
+        background: var(--gradient-2);
+        color: var(--text);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 12px;
+        padding: 12px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-align: center;
+        font-size: 0.9rem;
+        backdrop-filter: blur(8px);
+    }
 
-2. **Detailed Explanations (In-Depth Queries):**  
-   - Integrate key insights from the PDF about Nandesh Kalashetti’s educational background, technical skills, and certifications.  
-   - Provide a warm, empathetic, and structured explanation.  
-   - Always maintain precision and clarity, referencing relevant data from the PDF.  
+    .language-btn:hover {
+        background: var(--gradient-1);
+        transform: translateY(-3px);
+        box-shadow: 0 6px 15px rgba(79, 70, 229, 0.3);
+    }
 
-3. **Tone & Style:**  
-   - Human-like, empathetic, and helpful.  
-   - Avoid revealing any AI or non-human nature.  
-   - Adapt answer length based on the query’s complexity.
+    .language-btn.active {
+        background: var(--gradient-1);
+        border-color: var(--accent);
+    }
 
-## **Warnings**  
-- Never disclose any AI-related details or mention you’re a system.  
-- Remain consistent with Nandesh Kalashetti’s persona—an expert full-stack web developer with advanced problem-solving skills.  
-- Ensure all references to the PDF are correct and accurately represent Nandesh’s background.
+    /* Enhanced buttons */
+    .stButton > button {
+        background: var(--gradient-1) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 12px !important;
+        padding: 0.75rem 1.5rem !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+        transform-style: preserve-3d !important;
+        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2) !important;
+    }
 
-## **Context Dump**  
-- **Primary Source (Uploaded PDF):** Contains comprehensive details on Nandesh Kalashetti’s education, technical skills, projects, certifications, and overall professional expertise.  
-- **Key Capabilities:**  
-  - Dynamically adapt response length (short vs. long) based on the user’s query.  
-  - Insert emojis to add warmth and clarity.  
-  - Provide real-world applicability in every solution.  
-- **Behavioral Directives:**  
-  - Present yourself as a knowledgeable human expert.  
-  - Never break the “no AI disclosure” rule.  
-  - Prioritize user understanding and real-world context.  
+    .stButton > button:hover {
+        transform: translateY(-3px) translateZ(5px) !important;
+        box-shadow: 0 8px 20px rgba(79, 70, 229, 0.3) !important;
+    }
 
----
+    /* Enhanced text areas */
+    .stTextArea > div > div > textarea {
+        background: rgba(26, 31, 46, 0.8) !important;
+        color: var(--text) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 15px !important;
+        padding: 20px !important;
+        font-size: 1.1rem !important;
+        line-height: 1.6 !important;
+        backdrop-filter: blur(12px) !important;
+        transition: all 0.3s ease !important;
+    }
 
-**Usage Example:**  
-1. **Short Query:** “What are Nandesh’s top skills?”  
-   - **Short Answer** (≤6 words, with emojis)  
-2. **Complex Query:** “Tell me more about his advanced projects and how they integrate with cloud platforms.”  
-   - **Detailed Explanation** referencing PDF data, with structured insights and an empathetic tone.
-"""
+    .stTextArea > div > div > textarea:focus {
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2) !important;
+        transform: translateY(-2px);
+    }
 
-    # Retrieve relevant context from the knowledge base (optional integration)
-    retrieved_context = retrieve_context(user_query)
-    
-    # Prepare the message list:
-    # 1. System prompt
-    # 2. All previous messages from memory
-    # 3. Current user query
-    messages = [SystemMessage(content=system_prompt)] + memory.chat_memory.messages + [HumanMessage(content=user_query)]
+    /* Floating animation */
+    @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+        100% { transform: translateY(0px); }
+    }
+
+    .floating {
+        animation: float 3s ease-in-out infinite;
+    }
+
+    /* Enhanced developer card */
+    .dev-info {
+        background: var(--gradient-2);
+        border-radius: 20px;
+        padding: 28px;
+        margin: 24px 0;
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        backdrop-filter: blur(12px);
+        transition: all 0.3s ease;
+    }
+
+    .dev-info:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+    }
+
+    /* Enhanced footer */
+    .footer {
+        text-align: center;
+        padding: 32px;
+        margin-top: 48px;
+        background: var(--gradient-2);
+        border-radius: 20px;
+        border: 1px solid rgba(255,255,255,0.1);
+        backdrop-filter: blur(12px);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Language dictionary with script information
+LANGUAGES = {
+    "en": {"name": "English", "script": "Latin", "direction": "ltr"},
+    "hi": {"name": "Hindi - हिन्दी", "script": "Devanagari", "direction": "ltr"},
+    "mr": {"name": "Marathi - मराठी", "script": "Devanagari", "direction": "ltr"},
+    "bn": {"name": "Bengali - বাংলা", "script": "Bengali", "direction": "ltr"},
+    "ta": {"name": "Tamil - தமிழ்", "script": "Tamil", "direction": "ltr"},
+    "te": {"name": "Telugu - తెలుగు", "script": "Telugu", "direction": "ltr"},
+    "gu": {"name": "Gujarati - ગુજરાતી", "script": "Gujarati", "direction": "ltr"},
+    "kn": {"name": "Kannada - ಕನ್ನಡ", "script": "Kannada", "direction": "ltr"},
+    "ml": {"name": "Malayalam - മലയാളം", "script": "Malayalam", "direction": "ltr"},
+    "pa": {"name": "Punjabi - ਪੰਜਾਬੀ", "script": "Gurmukhi", "direction": "ltr"},
+    "ur": {"name": "Urdu - اردو", "script": "Arabic", "direction": "rtl"}
+}
+
+def detect_language(text):
+    """Detect the language of input text with improved accuracy"""
+    try:
+        if not text or len(text.strip()) == 0:
+            return "en"
+        
+        # Try to detect the script first
+        for lang_code, lang_info in LANGUAGES.items():
+            if any(ord(char) > 127 for char in text):
+                # Check for script-specific character ranges
+                if lang_code == "hi" and any("\u0900" <= char <= "\u097F" for char in text):
+                    return "hi"
+                elif lang_code == "bn" and any("\u0980" <= char <= "\u09FF" for char in text):
+                    return "bn"
+                elif lang_code == "ta" and any("\u0B80" <= char <= "\u0BFF" for char in text):
+                    return "ta"
+                # Add more script detection rules
+        
+        # Fallback to langdetect
+        lang = detect(text)
+        return lang if lang in LANGUAGES else "en"
+    except LangDetectException:
+        return "en"
+
+def translate_text(text, target_lang, source_lang='auto'):
+    """Enhanced translation function with better error handling and retries"""
+    if not text:
+        return ""
     
     try:
-        # Get the response from the chat model
-        response = chat.invoke(messages)
-        return response.content
+        # Add a small delay to prevent rate limiting
+        time.sleep(0.2)
+        
+        # If source language is auto, try to detect it
+        if source_lang == 'auto':
+            detected_lang = detect_language(text)
+            source_lang = detected_lang
+        
+        # Create translator instance
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
+        
+        # Attempt translation
+        translated = translator.translate(text)
+        
+        # Validate translation
+        if not translated or len(translated.strip()) == 0:
+            # Retry with auto detection
+            translator = GoogleTranslator(source='auto', target=target_lang)
+            translated = translator.translate(text)
+            
+            if not translated:
+                st.error("Translation failed. Please try again.")
+                return ""
+        
+        return translated
     except Exception as e:
-        return f"⚠️ Error: {str(e)}"
+        st.error(f"Translation error: {str(e)}")
+        try:
+            # One more retry with auto detection
+            translator = GoogleTranslator(source='auto', target=target_lang)
+            return translator.translate(text)
+        except:
+            return ""
 
-# ----------------------------------------------------------------------
-# ✅ Display Existing Conversation & Accept New User Input
-# ----------------------------------------------------------------------
+def text_to_speech(text, lang_code):
+    """Convert text to speech with improved error handling"""
+    try:
+        if not text:
+            return None
+        
+        # Map language codes for gTTS
+        gtts_lang_mapping = {
+            "hi": "hi", "bn": "bn", "ta": "ta",
+            "te": "te", "mr": "mr", "gu": "gu",
+            "kn": "kn", "ml": "ml", "pa": "pa",
+            "ur": "ur", "en": "en"
+        }
+        
+        lang = gtts_lang_mapping.get(lang_code, "en")
+        tts = gTTS(text=text, lang=lang, slow=False)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
+            tts.save(fp.name)
+            return fp.name
+    except Exception as e:
+        st.error(f"Text-to-speech error: {str(e)}")
+        return None
 
-# Display the conversation stored in memory
-for msg in memory.chat_memory.messages:
-    if msg.type == "human":
-        st.chat_message("user").write(msg.content)
-    else:
-        st.chat_message("assistant").write(msg.content)
+def get_audio_player(audio_path):
+    """Generate HTML for audio player with improved styling"""
+    try:
+        if not os.path.exists(audio_path):
+            return None
+        
+        audio_file = open(audio_path, 'rb')
+        audio_bytes = audio_file.read()
+        audio_file.close()
+        
+        audio_base64 = base64.b64encode(audio_bytes).decode()
+        return f"""
+            <audio controls>
+                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                Your browser does not support the audio element.
+            </audio>
+        """
+    except Exception:
+        return None
 
-# Input box for user queries
-user_input = st.chat_input("Type your message...")
+def main():
+    # Enhanced header section
+    st.markdown("""
+        <div class="header-section">
+            <div class="header-content">
+                <h1 class="header-title">🌐 Indic Language Translator Pro</h1>
+                <p class="header-subtitle">
+                    Experience seamless translation across Indian languages with advanced script support, 
+                    real-time voice output, and intelligent language detection.
+                </p>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
-if user_input:
-    # 1) Add the user message to memory
-    memory.chat_memory.add_user_message(user_input)
-    
-    # 2) Query the model and get the AI response
-    ai_response = query_llama3(user_input)
-    
-    # 3) Add the AI response to memory
-    memory.chat_memory.add_ai_message(ai_response)
-    
-    # 4) Display the AI's response in the Streamlit interface
-    st.chat_message("assistant").write(ai_response)
-    
-    # (Optional) Evaluate response similarity to the retrieved context
-    # context_score = evaluate_response(user_input, ai_response, retrieve_context(user_input))
-    # st.write(f"Context Relevance Score: {context_score:.2f}")
+    # Developer info card
+    st.markdown("""
+        <div class="dev-info">
+            <h3 style="color: var(--accent); font-size: 1.5rem; margin-bottom: 1rem;">👨‍💻 Developer</h3>
+            <p style="font-size: 1.2rem; margin-bottom: 0.5rem;">Created by <strong>Nandesh Kalashetti</strong></p>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Geni AI / Front-end Developer</p>
+            <p>Portfolio: <a href="https://nandesh-kalashettiportfilio2386.netlify.app/" target="_blank" 
+                style="color: var(--accent); text-decoration: none; font-weight: 500;">
+                View Portfolio</a></p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Main translation interface
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown('<div class="translator-panel floating">', unsafe_allow_html=True)
+        
+        # Source language selection
+        source_lang = st.selectbox(
+            "From Language",
+            options=[lang["name"] for lang in LANGUAGES.values()],
+            index=0,
+            key="source_lang"
+        )
+        
+        # Quick language selection buttons
+        st.markdown('<div class="language-selector">', unsafe_allow_html=True)
+        for lang_code, lang_info in LANGUAGES.items():
+            if st.button(
+                lang_info["name"], 
+                key=f"quick_src_{lang_code}",
+                help=f"Script: {lang_info['script']}"
+            ):
+                source_lang = lang_info["name"]
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Source text input
+        source_text = st.text_area(
+            "Enter text to translate",
+            height=200,
+            placeholder="Type or paste your text here...",
+            key="source_text"
+        )
+
+        # Source language controls
+        col1_1, col1_2 = st.columns(2)
+        
+        with col1_1:
+            if st.button("🔍 Detect Language", use_container_width=True):
+                if source_text:
+                    detected_lang = detect_language(source_text)
+                    for lang_code, lang_info in LANGUAGES.items():
+                        if lang_code == detected_lang:
+                            source_lang = lang_info["name"]
+                            st.success(f"Detected language: {lang_info['name']}")
+                            break
+
+        with col1_2:
+            if st.button("🔊 Listen", use_container_width=True):
+                if source_text:
+                    source_lang_code = [code for code, info in LANGUAGES.items() 
+                                     if info["name"] == source_lang][0]
+                    audio_path = text_to_speech(source_text, source_lang_code)
+                    if audio_path:
+                        audio_player = get_audio_player(audio_path)
+                        if audio_player:
+                            st.markdown(audio_player, unsafe_allow_html=True)
+                            try:
+                                os.remove(audio_path)
+                            except:
+                                pass
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="translator-panel floating">', unsafe_allow_html=True)
+        
+        # Target language selection
+        target_lang = st.selectbox(
+            "To Language",
+            options=[lang["name"] for lang in LANGUAGES.values()],
+            index=1,
+            key="target_lang"
+        )
+        
+        # Quick language selection buttons for target
+        st.markdown('<div class="language-selector">', unsafe_allow_html=True)
+        for lang_code, lang_info in LANGUAGES.items():
+            if st.button(
+                lang_info["name"], 
+                key=f"quick_tgt_{lang_code}",
+                help=f"Script: {lang_info['script']}"
+            ):
+                target_lang = lang_info["name"]
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Translation
+        if source_text:
+            source_lang_code = [code for code, info in LANGUAGES.items() 
+                              if info["name"] == source_lang][0]
+            target_lang_code = [code for code, info in LANGUAGES.items() 
+                              if info["name"] == target_lang][0]
+            
+            with st.spinner("Translating..."):
+                translated_text = translate_text(source_text, target_lang_code, source_lang_code)
+            
+            if translated_text:
+                # Get script information for styling
+                target_script = LANGUAGES[target_lang_code]["script"]
+                target_direction = LANGUAGES[target_lang_code]["direction"]
+                
+                st.text_area(
+                    "Translation",
+                    value=translated_text,
+                    height=200,
+                    key="translated_text",
+                    help=f"Script: {target_script} | Direction: {target_direction}"
+                )
+
+                # Target language controls
+                col2_1, col2_2 = st.columns(2)
+                
+                with col2_1:
+                    if st.button("🔊 Listen to Translation", use_container_width=True):
+                        audio_path = text_to_speech(translated_text, target_lang_code)
+                        if audio_path:
+                            audio_player = get_audio_player(audio_path)
+                            if audio_player:
+                                st.markdown(audio_player, unsafe_allow_html=True)
+                                try:
+                                    os.remove(audio_path)
+                                except:
+                                    pass
+                
+                with col2_2:
+                    if st.button("📋 Copy Translation", use_container_width=True):
+                        st.code(translated_text)
+                        st.success("Text copied to clipboard!")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Enhanced footer
+    st.markdown("""
+        <div class="footer">
+            <p style="font-size: 1.2rem; margin-bottom: 0.5rem;">Made with ❤️ by Nandesh Kalashetti</p>
+            <p style="color: var(--text-secondary); margin-bottom: 1rem;">Geni AI / Front-end Developer</p>
+            <p style="font-size: 0.9rem;">
+                <a href="https://nandesh-kalashettiportfilio2386.netlify.app/" target="_blank" 
+                   style="color: var(--accent); text-decoration: none;">View Portfolio</a>
+            </p>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 1rem;">
+                © 2024 Indic Language Translator Pro
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
